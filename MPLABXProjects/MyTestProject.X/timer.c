@@ -5,13 +5,13 @@
  * Created on May 7, 2026, 3:23 PM
  */
 
-
-
-#include "timer.h"
 #include "xc.h"
+#include "timer.h"
 
 #define Fcy 72000000UL
 #define Prescaler 256
+
+// timer tick frequency after prescaler per 1ms
 #define Ticks_per_ms (Fcy / (Prescaler * 1000UL))
 
 void tmr_setup_period(int timer, int ms){
@@ -25,11 +25,11 @@ void tmr_setup_period(int timer, int ms){
         T1CONbits.TCS = 0;      // specify that the clock source is Fcy
         T1CONbits.TCKPS = 3;    // define prescaler as 1:256
 
-        TMR1 = 0;               // we reset the timer 
-        IFS0bits.T1IF = 0;      // we reset the flag
+        TMR1 = 0;               // reset the timer 
+        IFS0bits.T1IF = 0;      // clear interrupt flag
         
         PR1 = pr - 1;           // as it needs one cycle to see that it has reached the desired number
-        T1CONbits.TON = 1;      // we start the timer now
+        T1CONbits.TON = 1;      // start the timer
     }
     else if(timer == TIMER2){
         T2CONbits.TON = 0; 
@@ -54,12 +54,12 @@ int tmr_wait_period(int timer){
             return 1;
         }
         while(IFS0bits.T1IF == 0);      // busy waiting
-        IFS0bits.T1IF = 0;              // we reset it (perhaps it is redundant)
+        IFS0bits.T1IF = 0;              // we reset the flag
     }
 
     else if (timer == TIMER2){
         if(IFS0bits.T2IF == 1){
-            IFS0bits.T2IF == 0;
+            IFS0bits.T2IF = 0;
             return 1;
         }
         while(IFS0bits.T2IF == 0);
@@ -72,14 +72,15 @@ int tmr_wait_period(int timer){
 
 void tmr_wait_ms(int timer, int ms){
    
-    // here we define the lowest unit allowed -> 1ms
+    // Blocking a delay based on repeated 1ms timer ticks
+    // Reconfigures lowest unit allowed -> 1ms
     tmr_setup_period(timer, 1);
 
-    // we iterate until we reach the value inputed 
+    // iterate until input value is reached
     for (int i = 0; i < ms; i++){
         tmr_wait_period(timer);
     }
-
+    // stop timer after the delay
     if (timer == TIMER1){
         T1CONbits.TON = 0; 
     }

@@ -8,9 +8,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include "xc.h"
 #include "timer.h"
-#include <math.h>
 #include "spi.h"
 #include "uart.h"
 

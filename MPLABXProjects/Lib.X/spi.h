@@ -1,10 +1,5 @@
 #ifndef SPI_H
 #define	SPI_H
-
-
-#ifdef	__cplusplus
-extern "C" {
-#endif 
     
 #include <stdlib.h>
     
@@ -13,22 +8,24 @@ extern "C" {
 #define MAG 3
     
 typedef struct{
-    int16_t axis_x;
-    int16_t axis_y;
-    int16_t axis_z;
+    int16_t axis_x;     //raw accelerometer x-axis value
+    int16_t axis_y;     //raw accelerometer y-axis value
+    int16_t axis_z;     //raw accelerometer z-axis value
 
-    float roll;
-    float pitch;
+    float roll;         //computed roll angle in degrees
+    float pitch;        //computed pitch angle in degrees
 } Accel_DataStruct;
      
-
+// sets up SPI configuration and configures pins
 void spi_setup();
-unsigned int spi_write(unsigned int data);
-void accel_bw(int bw);
-Accel_DataStruct accel_read();
 
-#ifdef	__cplusplus
-}
-#endif 
+//sends byte over SPI and returns receives byte
+unsigned int spi_write(unsigned int data);
+
+// sets accellerometer bandwidth
+void accel_bw(int bw);
+
+// reads accelerometer data and computes angles 
+Accel_DataStruct accel_read();
 
 #endif
