@@ -1,146 +1,146 @@
-/*
- * File:   main.c
- * Author: kulle
- *
- * Created on March 5, 2026, 2:36 PM
- */
-
-
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include "xc.h"
 #include "timer.h"
 #include "spi.h"
 #include "uart.h"
+#include <math.h>
 
+// Scheduling counters 
+static int accel_count = 0;     // Counts loop iterations between accel reads
+static int char_index  = 0;     // Number of valid characters in the shift reg  
+static int timer_count = 0;     // Counts iterations for the 1 Hz LED blink     
+static int ang_count   = 5;     // Stagger the first $ANG* send by 50 ms        
 
-int accel_count = 0;
-int char_index  = 0;
+static int hz_period = 10;      // Default 10 Hz                               
+static int hz_count  = 0;       // count loop iterations since last acc transmit
 
-int timer_count = 0;
-int ang_count = 5;
+//initial_setup
+static void initial_setup() {
 
-int hz_period = 10;  
-int hz_count  = 0; 
-
-
-void initial_setup(){
-    // disable the analog modality
+    // Disable analog inputs 
     ANSELA = ANSELB = ANSELC = ANSELD = ANSELE = ANSELG = 0x0000;
-    
-    // timers
+
     tmr_setup_period(TIMER1, 10);
-    
-    // LED2
-    TRISGbits.TRISG9 = 0;       // output
-    LATGbits.LATG9 = 1;         // initial value
+
+    TRISGbits.TRISG9 = 0;   // LED2 output
+    LATGbits.LATG9 = 1;   // initial state: on
 }
 
-void algorithm(){
+static void algorithm() {
     tmr_wait_ms(TIMER2, 7);
 }
 
-// Uart change
-
-
 int main() {
-    int period_misses = 0, value = 0;
 
-    char reciv_char[7] = {0};
+    int period_misses = 0;
+    int value = 0;
+
+    char reciv_char[7] = {0};   // Shift register for command parsing, holds the last 7 received bytes
     char buffer_euler[48];
     char tempChar;
 
-    Accel_DataStruct ads;
+    Sensor_DataStruct ads = {0};
 
+    // onetime setup
     initial_setup();
-    uart_setup(115200);
+    uart_setup(115200);     // configurable baudrate with adjusted buffersizes
     spi_setup();
+    accel_bw(15);           // Set initial bandwidth to 15
 
-    accel_bw(15);
-    
-    
-    while(1){
+    while (1) {
+
         algorithm();
 
-        // we have to get the accelerometer data every 20ms (50Hz) so every two iterations
-        if (++accel_count >= 2){    
+        // Accelerometer read at 50 Hz 
+        if (++accel_count >= 2) {
             accel_count = 0;
-            ads =  accel_read();
+            ads = sensor_read(ACC);     // able to select sensor (ACC, MAG)
         }
 
-        // send the angle axes (also every ms value of the frequencies are a multiple of 20ms)
-        if (hz_period > 0 && ++hz_count >= hz_period) {   // +2 bc one main loop is 10ms but we enter the daq every 20ms
+        // Transmit $ACC* at the configurable frequency 
+        // Disable transmission with hz_period = 0
+        if (hz_period > 0 && ++hz_count >= hz_period) {
             hz_count = 0;
-            sprintf(buffer_euler, "$ACC,%d,%d,%d*",
-            (int)ads.axis_x,
-            (int)ads.axis_y,
-            (int)ads.axis_z);
-
+            sprintf(buffer_euler, "$ACC,%.2f,%.2f,%.2f*",
+                    ads.axis_x,
+                    ads.axis_y,
+                    ads.axis_z);
             uart_transmit(buffer_euler);
-            // if the filter is still being normalized we just post the previous values
         }
 
-        // for the angles which are transmitted a fixed 5Hz
+        //Transmit $ANG* and $DBG* at 5 Hz
         if (++ang_count >= 20) {
             ang_count = 0;
-            sprintf(buffer_euler, "$ANG,%.1f,%.1f*", (double) ads.roll, (double) ads.pitch);
+
+            sprintf(buffer_euler, "$ANG,%.1f,%.1f*",
+                    (double)ads.roll,
+                    (double)ads.pitch);
             uart_transmit(buffer_euler);
 
-            
-            // to check the number of missed periods
-            char dbg[32];
+            // Debug message
+            /*char dbg[32];
             sprintf(dbg, "$DBG,%d*", period_misses);
-            uart_transmit(dbg);
+            uart_transmit(dbg);*/
         }
-        
-        while (uart_receive_char(&tempChar)){
-           
-           reciv_char[0] = reciv_char[1];
-           reciv_char[1] = reciv_char[2];
-           reciv_char[2] = reciv_char[3];
-           reciv_char[3] = reciv_char[4];
-           reciv_char[4] = reciv_char[5];
-           reciv_char[5] = reciv_char[6];
-           reciv_char[6] = tempChar;
-           
-            if (char_index  < 7){
-                char_index ++;
+
+        // Drain the receive buffer and parse commands 
+        // Commands are exactly 7 bytes and should look like $HZ,yy* or $BW,xx*
+        while (uart_receive_char(&tempChar)) {
+
+            reciv_char[0] = reciv_char[1];
+            reciv_char[1] = reciv_char[2];
+            reciv_char[2] = reciv_char[3];
+            reciv_char[3] = reciv_char[4];
+            reciv_char[4] = reciv_char[5];
+            reciv_char[5] = reciv_char[6];
+            reciv_char[6] = tempChar;
+
+            if (char_index < 7) {
+                char_index++;
             }
-           
-           if (char_index  == 7){          
-                if (reciv_char[0] == '$' && reciv_char[3] == ',' && reciv_char[6] == '*' &&
-                   ((reciv_char[1] == 'H' &&  reciv_char[2] == 'Z') ||
-                   (reciv_char[1] == 'B' && reciv_char[2] == 'W')) &&
-                   (reciv_char[4] >= '0' && reciv_char[4] <= '9') &&
-                   (reciv_char[5] >= '0' && reciv_char[5] <= '9')){ 
-                    
-                    value = (reciv_char[4] - '0') * 10 + (reciv_char[5] - '0'); // we turn chars into numbers
-                    // FOR UART DATA FREQUENCY
-                    if (reciv_char[1] == 'H' &&  reciv_char[2] == 'Z'){
-                        hz_count = 0;
-                        hz_period = uart_frequency_change(value, hz_period);
+
+            if (char_index == 7) {
+                if (reciv_char[0] == '$' && reciv_char[3] == ',' && reciv_char[6] == '*') {
+
+                    // structurally valid frame, check content now
+                    if (((reciv_char[1] == 'H' && reciv_char[2] == 'Z') ||
+                         (reciv_char[1] == 'B' && reciv_char[2] == 'W')) &&
+                        (reciv_char[4] >= '0' && reciv_char[4] <= '9') &&
+                        (reciv_char[5] >= '0' && reciv_char[5] <= '9')) {
+
+                        value = (reciv_char[4] - '0') * 10 + (reciv_char[5] - '0');
+
+                        if (reciv_char[1] == 'H') {
+                            hz_count  = 0;     
+                            hz_period = uart_frequency_change(value, hz_period);   // $ERR,2* sent inside if invalid
+                        } else {
+                            accel_bw(value);                // $ERR,1* sent inside if invalid
+                        }
+
+                    } else {
+                        // looks like a command but wrong type/negative values
+                        uart_transmit("$ERR,3*");
                     }
-                    // FOR BANDWIDTH FILTER CONTROL
-                    else{
-                       accel_bw(value);
-                    }
+
+                    // reset in both cases
                     reciv_char[0] = reciv_char[1] = reciv_char[2] = reciv_char[3] = 0;
                     reciv_char[4] = reciv_char[5] = reciv_char[6] = 0;
                     char_index = 0;
                 }
-            } 
-       }               
-             
-        
-        if(tmr_wait_period(TIMER1)){
+            }
+        }
+
+        if (tmr_wait_period(TIMER1)) {
             period_misses++;
         }
-        // Led
-        if (++timer_count == 50){
+
+        // Toggle LED2 at 1 Hz 
+        if (++timer_count == 50) {
             LATGbits.LATG9 = !LATGbits.LATG9;
             timer_count = 0;
         }
     }
-    return (EXIT_SUCCESS);
+
+    return EXIT_SUCCESS;
 }

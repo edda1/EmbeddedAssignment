@@ -8,24 +8,33 @@
 #define MAG 3
     
 typedef struct{
-    int16_t axis_x;     //raw accelerometer x-axis value
-    int16_t axis_y;     //raw accelerometer y-axis value
-    int16_t axis_z;     //raw accelerometer z-axis value
+    float axis_x;
+    float axis_y;
+    float axis_z;
 
-    float roll;         //computed roll angle in degrees
-    float pitch;        //computed pitch angle in degrees
-} Accel_DataStruct;
+    float roll;         //accelerometer: computed roll angle in degrees
+    float pitch;        //accelerometer: computed pitch angle in degrees
+} Sensor_DataStruct;
      
-// sets up SPI configuration and configures pins
+// Sets up SPI configuration and configures pins
 void spi_setup();
 
-//sends byte over SPI and returns receives byte
+// Sends byte over SPI and returns receives byte
 unsigned int spi_write(unsigned int data);
 
 // sets accellerometer bandwidth
 void accel_bw(int bw);
 
-// reads accelerometer data and computes angles 
-Accel_DataStruct accel_read();
+void mag_setup(void);
+
+// Reads accelerometer data and returns Sensor Datastruct
+Sensor_DataStruct accel_read();
+
+// Reads magnetometer data and returns Sensor Datastruct
+Sensor_DataStruct mag_read();
+
+// Allows to chose what sensor to read from
+Sensor_DataStruct sensor_read(int select);
+
 
 #endif

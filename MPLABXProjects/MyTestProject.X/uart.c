@@ -1,130 +1,142 @@
-/*
- * File:   uart.c
- * Author: kulle
- *
- * Created on 8. Mai 2026, 09:42
- */
-
-
 #include "xc.h"
 #include "uart.h"
 
+// Sizes are power of to to allow for easy wrap-around
+// default buffer sizes that get reconfigured depending on baudrate in the setup
+#define T_BUF_SIZE 128      // Maximum needed with highest configurable baudrate
+#define R_BUF_SIZE 64       // Max needed (smaller than transmit because strings are very short)
 
-#define T_BUF_SIZE 64       //tx buffer: needs to be large enough to accomodate formatted strings
-#define R_BUF_SIZE 16       //rx buffer:  small, because commands are short ($HZxx, $BWxx)
+#define Fcy 72000000UL      // Instruction cycle frequency
 
-#define Fcy 72000000UL     // CPU frequency in Hz
-
-static volatile char receive_data[R_BUF_SIZE];
+static volatile char receive_data [R_BUF_SIZE];
 static volatile char transmit_data[T_BUF_SIZE];
 
-Circular_Buffer receive_buffer = {receive_data, 0, 0, R_BUF_SIZE };
-Circular_Buffer transmit_buffer = {transmit_data, 0, 0, T_BUF_SIZE };
+// Initializing circular buffers
+Circular_Buffer receive_buffer  = { receive_data,  0, 0, R_BUF_SIZE  };
+Circular_Buffer transmit_buffer = { transmit_data, 0, 0, T_BUF_SIZE  };
 
-// interrupt for reading from the uart
+// RX interrupt
 void __attribute__((interrupt, no_auto_psv)) _U1RXInterrupt(void) {
-    IFS0bits.U1RXIF = 0;
-    
+    IFS0bits.U1RXIF = 0;  
+
     while (U1STAbits.URXDA == 1) {
         cb_produce(&receive_buffer, U1RXREG);
     }
 }
 
-// uart transmit interrupt
+//TX interrupt
 void __attribute__((interrupt, no_auto_psv)) _U1TXInterrupt(void) {
-    IFS0bits.U1TXIF = 0;
+    IFS0bits.U1TXIF = 0;  
     char c;
 
     if (cb_consume(&transmit_buffer, &c)) {
         U1TXREG = c;
     } else {
-        IEC0bits.U1TXIE = 0;       // nothing left so we disable interrupt
+        IEC0bits.U1TXIE = 0;
     }
 }
 
-// sets up uart and configures bauderate/communication speed
-void uart_setup(uint32_t baudrate){
-    // I/O for Uart
-    TRISDbits.TRISD11 = 1;      // in
-    TRISDbits.TRISD0 = 0;       // out   
+void uart_setup(uint32_t baudrate) {
     
+    // Set buffer sizes based on baudrate
+    // RX scales with baudrate (more bytes/sec = bigger buffer needed)
+    // TX can be smaller at 64 since it depends on message length, not baudrate
+    // Buffer gets drained at least every 10ms so 
+    // we calculate max bytes in 10 ms and round up to the next power of 2
+    if (baudrate <= 9600) {
+        receive_buffer.buf_size  = 16;
+        transmit_buffer.buf_size = 32;
+    } else if (baudrate <= 57600) {
+        receive_buffer.buf_size  = 64;
+        transmit_buffer.buf_size = 64;
+    } else {
+        // 115200 and above
+        receive_buffer.buf_size  = 128;
+        transmit_buffer.buf_size = 64;
+    }
+    
+    // Reset head and tail so the buffer starts empty with the new size
+    receive_buffer.head  = receive_buffer.tail  = 0;
+    transmit_buffer.head = transmit_buffer.tail = 0;
+
+    TRISDbits.TRISD11 = 1;      // RD11 as input 
+    TRISDbits.TRISD0  = 0;      // RD0  as output 
+
     // Pin remapping
-    RPINR18bits.U1RXR = 75;     // for input which is supposed to be the RD11 pin        
-    RPOR0bits.RP64R = 0x01;     //  for output which is supposed to be the RD0        
-    
-    // Baud Rate Setup
-    
-    U1MODEbits.BRGH = 1;    // to select the 16 divisor
-    U1BRG = (Fcy / (4UL * baudrate)) - 1;         // we load it so we can get baudrate of 115200
-    
-    // Power on the module
+    RPINR18bits.U1RXR = 75;     // Map U1RX input  to RPI75 (RD11) 
+    RPOR0bits.RP64R   = 0x01;   // Map U1TX output to RP64  (RD0) 
+
+    U1MODEbits.BRGH = 1;
+    U1BRG = (uint16_t)((Fcy / (4UL * baudrate)) - 1);
+
+    // Enable UART module and transmitter 
     U1MODEbits.UARTEN = 1;
-    U1STAbits.UTXEN = 1;
-    
-    // Enable transmitter
-    IFS0bits.U1RXIF = 0;    // interrupt flag
-    IEC0bits.U1RXIE = 1;    // interrupt enable
+    U1STAbits.UTXEN   = 1;
+
+    // Enable RX interrupt
+    IFS0bits.U1RXIF = 0;
+    IEC0bits.U1RXIE = 1;
 }
 
-// send string via uart
-void uart_transmit(const char* message){
+// Queues stings in buffer and begons transmit
+void uart_transmit(const char *message) {
     char c;
 
+    // Fill the circular buffer with every character of the string
     while (*message) {
-        while (!cb_produce(&transmit_buffer, *message));  // wait if buffer full
+        while (!cb_produce(&transmit_buffer, *message)); 
         message++;
     }
 
-    // we manually send the first byte to kick off the interrupt chain
+    // Manually send the first byte to kick off the interrupt chain
     if (cb_consume(&transmit_buffer, &c)) {
-        IEC0bits.U1TXIE = 0;                // disable interrupt briefly
+        IEC0bits.U1TXIE = 0;
         U1TXREG = c;
-        IEC0bits.U1TXIE = 1;                // we enable the uart so the rest is sent by interrupt
+        IEC0bits.U1TXIE = 1;    // Enable the uart so the rest is sent by interrupt
     }
 }
 
-// adds characters to circular buffer
-int cb_produce(Circular_Buffer *cb, char c){
+// Attempts to add byte to buffer, returns 1 if successful
+int cb_produce(Circular_Buffer *cb, char c) {
     int next = (cb->head + 1) % cb->buf_size;
 
-    if (next == cb -> tail){    // if the buffer is full
-        return 0;   
+    if (next == cb->tail) {
+        return 0;           // Buffer full, byte dropped
     }
 
     cb->data[cb->head] = c;
     cb->head = next;
-    return 1;       
+    return 1;
 }
 
-// removes character from circular buffer
-int cb_consume(Circular_Buffer *cb, char *out){
-    if (cb->tail == cb->head){
-        return 0;       // transmit buffer is empty
+// Attempts to remove one byte from the buffer, returns 1 on success
+int cb_consume(Circular_Buffer *cb, char *out) {
+    if (cb->tail == cb->head) {
+        return 0;           // Buffer empty 
     }
+
     *out = cb->data[cb->tail];
     cb->tail = (cb->tail + 1) % cb->buf_size;
     return 1;
 }
 
-// helper function to read one received byte
-int uart_receive_char(char *out){
+// Reads one character from the UART RX circular buffer into *out
+int uart_receive_char(char *out) {
     return cb_consume(&receive_buffer, out);
 }
 
-// we change the transmit frequency of the data by determining a value that can be used inside the main loop 
-int uart_frequency_change(int value, int current){
-    
-    int period_hz = current;
-    
-    switch(value) {
-        case 0:  period_hz = 0;   break;    // disable
-        case 1:  period_hz = 100; break;    // 1000ms
-        case 2:  period_hz = 50;  break;    // 500ms
-        case 5:  period_hz = 20;  break;    // 200ms
-        case 10: period_hz = 10;  break;    // 100ms
+// Converting a received frequency value into the corresponding loop period
+int uart_frequency_change(int value, int current) {
+
+    switch (value) {
+        case  0: return 0;          //disable
+        case  1: return 100;        //1000ms
+        case  2: return 50;         //500ms
+        case  5: return 20;         //200ms
+        case 10: return 10;         //100ms
         default:
+            // If a wrong value is received, send error message 2 and leave the frequency unchanged 
             uart_transmit("$ERR,2*");
-            break;
-    }   
-    return period_hz;
+            return current;
+    }
 }

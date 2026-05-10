@@ -1,10 +1,3 @@
-/*
- * File:   timer.c
- * Author: kulle
- *
- * Created on May 7, 2026, 3:23 PM
- */
-
 #include "xc.h"
 #include "timer.h"
 

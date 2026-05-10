@@ -5,7 +5,7 @@ typedef struct{
     volatile char *data;    //buffer array
     volatile int head;      // read index  
     volatile int tail;      // write index
-    const int buf_size;     // buffer length
+    int buf_size;     // buffer length
 }Circular_Buffer;
 
 // initialize uart (pins, bauderate)
